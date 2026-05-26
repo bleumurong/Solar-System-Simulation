@@ -1,0 +1,428 @@
+import pygame
+import math
+pygame.init()
+width, height = 1200, 800
+WIN=pygame.display.set_mode((width,height))
+pygame.display.set_caption("Planet Simulation")
+background=pygame.transform.scale(pygame.image.load("background.png"), (width,height))
+blue=(100,149,237)
+pink=(255,0,255)
+green=(0,255,0)
+red=(188,39,50)
+dark_grey=(80,78,81)
+white=(255,255,255)
+yellow=(255,255,0)
+FONT = pygame.font.SysFont("comicsans", 16)
+
+CAMERA = pygame.Vector2(0,0)
+
+def draw_arrow(surface, color, start, end, width=5, dash_length=None):
+    # Function to draw acceleration line for the rocket
+    pygame.draw.line(surface, color, start, end, width)
+    
+    start_vec = pygame.Vector2(start)
+    end_vec = pygame.Vector2(end)
+    arrow_vec = end_vec - start_vec
+    angle = math.degrees(math.atan2(-arrow_vec.y, arrow_vec.x))
+    
+    head_size = 15
+    p1 = end_vec
+    p2 = end_vec + pygame.Vector2(-head_size, -head_size / 2).rotate(-angle)
+    p3 = end_vec + pygame.Vector2(-head_size, head_size / 2).rotate(-angle)
+    
+    pygame.draw.polygon(surface, color, [p1, p2, p3])
+
+class Planet:
+    AU=149.6e6*1000 # Astronomical Unit in meters
+    G=6.674283e-11 # Gravitational Constant in m^3 kg^-1 s^-2
+    SCALE=250/AU #1 AU = 100 pixels
+    ZOOM_SCALE=1e-9
+    TIMESTEP=3600*24 #1 day in seconds
+    zoomed= False
+
+    def __init__(self,x, y, radius, color, mass, name="Planet"):
+        self.x=x
+        self.y=y
+        self.radius=radius # Radius of the planet, which will affect how it is drawn and how it interacts with other planets
+        self.color=color
+        self.mass=mass # Mass of the planet, which will affect gravitational force calculations
+        self.name=name
+        self.orbit=[] # List to store the positions of the planet over time, which will be used to draw the orbit path of the planet.
+        self.sun=False # Indicates whether the planet is a sun, cause I don't want to draw the orbit of the sun, and the sun should not be affected by gravity from other planets, so this attribute will help to differentiate the sun from other planets in the simulation.
+        self.distance_to_sun=0 # Distance to the sun, which will be used to calculate the gravitational force exerted by the sun on the planet and to determine the planet's orbit around the sun.
+        self.x_vel=0 # Initial velocity in the x direction
+        self.y_vel=0 # Initial velocity in the y direction
+    
+    def draw(self,win):
+        current_scale = Planet.ZOOM_SCALE if Planet.zoomed else Planet.SCALE
+        x=self.x*current_scale + width/2 - CAMERA.x # Convert the planet's x position from meters to pixels using the SCALE factor, which allows us to draw the planet at the correct position on the screen.
+        y=self.y*current_scale + height/2 - CAMERA.y # Convert the planet's y position from meters to pixels using the SCALE factor, which allows us to draw the planet at the correct position on the screen.
+        if len(self.orbit) > 200:
+            self.orbit.pop(0) # Limit the number of points in the orbit list to 200 to prevent memory issues and to keep the orbit path visually manageable on the screen.
+        if len(self.orbit) > 2: # Check if the planet has enough positions in its orbit list to draw the orbit path, which requires at least 3 points to create a visible path.
+            update_points=[]
+            for point in self.orbit: # Iterate through the list of positions in the planet's orbit and draw a small circle at each position to create a visual representation of the planet's orbit path on the screen.
+                x,y = point
+                # x -= CAMERA.x
+                # y -= CAMERA.y
+                x = x*current_scale +width/2 - CAMERA.x
+                y = y*current_scale + height/2 - CAMERA.y
+                update_points.append((x,y))
+            pygame.draw.lines(win,self.color,False,update_points,2) # Draw the orbit path of the planet by connecting the points in the update_points list with lines of the specified color and thickness.
+        
+        pygame.draw.circle(
+            surface=win, 
+            color=self.color,
+            center=(x,y),
+            radius=self.radius * ( Planet.SCALE / (250/self.AU) ) # Draw the planet as a circle on the screen at the calculated (x, y) position with the specified color and radius.
+        )
+        if not self.sun:
+            distance_text = FONT.render(f"{round(self.distance_to_sun/1000,1)}km", 1, white) # Render the distance to the sun as text using the specified font and color, which will be displayed near the planet on the screen.
+            win.blit(distance_text, (x - distance_text.get_width()/2,y - distance_text.get_height()/2)) # Draw the distance text on the screen at a position centered above the planet, which allows users to see how far the planet is from the sun in kilometers.
+        
+       
+    def attraction(self,other):
+        other_x, other_y= other.x, other.y 
+        distance_x = other_x - self.x
+        distance_y= other_y -self.y
+        distance = math.sqrt(distance_x**2 + distance_y**2) # Calculate the distance between the current planet and another planet using the Pythagorean theorem, which is necessary for calculating the gravitational force between them.
+
+        if other.sun:
+            self.distance_to_sun = distance
+
+        force = self.G * self.mass * other.mass / distance**2
+        theta = math.atan2(distance_y, distance_x) # Calculate the angle (theta) between the current planet and the other planet using the atan2 function, which will be used to determine the direction of the gravitational force.
+        force_x = math.cos(theta) * force # Calculate x component of the gravitational force by multiplying the total force by the cosine of the angle (theta), which gives us the horizontal component of the force.
+        force_y = math.sin(theta) * force # Calculate y component of the gravitational force by multiplying the total force by the sine of the angle (theta), which gives us the vertical component of the force.
+        return force_x, force_y
+    
+    def update_position(self, planets):
+        total_fx = total_fy = 0 # Initialize total force components to zero, which will be used to accumulate the net gravitational force exerted on the planet by all other planets in the simulation.
+        for planet in planets:
+            if self == planet: # Skip calculating attraction to itself
+                continue
+            fx, fy = self.attraction(planet) # Calculate the gravitational force exerted by each planet on the current planet using the attraction method, which returns the x and y components of the force.
+            total_fx += fx  
+            total_fy += fy # Accumulate the total force components by adding the force from each planet to the total_fx and total_fy variables.
+        
+        self.x_vel += total_fx / self.mass * self.TIMESTEP # v = v + (F/m) * dt: Update the velocity of the planet in the x direction by adding the acceleration (total force divided by mass) multiplied by the time step to the current velocity.
+        self.y_vel += total_fy / self.mass * self.TIMESTEP # v = v + (F/m) * dt: Update the velocity of the planet in the y direction by adding the acceleration (total force divided by mass) multiplied by the time step to the current velocity.
+        self.x += self.x_vel * self.TIMESTEP # x = x + v * dt: Update the position of the planet in the x direction by adding the velocity multiplied by the time
+        self.y += self.y_vel * self.TIMESTEP
+        
+        
+
+        self.orbit.append((self.x,self.y)) # Append the new position of the planet to the orbit list, which will be used to draw the orbit path of the planet on the screen.
+
+class PhysicsObject:
+    def __innit__(self,x,y,mass):
+        self.x=x
+        self.y=y
+        self.x_vel=0
+        self.y_vel=0
+        self.mass=mass
+        self.pos=pygame.Vector2(self.x,self.y)
+        self.vel=pygame.Vector2(self.x_vel,self.y_vel)
+        
+
+
+class Rocket(Planet):
+    # Rocket is just a small planet that sometimes gets pushed)
+    def __init__(self,x, y, color, mass, length, width, name="Rocket"):
+        self.x = x
+        self.y = y
+        self.length = length
+        self.width = width
+        self.name=name
+        self.radius = 0 # Not used
+        self.thrust = 10
+        self.mass = mass
+        self.color = color
+
+        self.direction = pygame.Vector2(self.x,self.y) 
+
+        self.orbit=[] # List to store the positions of the planet over time, which will be used to draw the orbit path of the planet.
+        self.sun=False # Indicates whether the planet is a sun, cause I don't want to draw the orbit of the sun, and the sun should not be affected by gravity from other planets, so this attribute will help to differentiate the sun from other planets in the simulation.
+        self.distance_to_sun=0 # Distance to the sun, which will be used to calculate the gravitational force exerted by the sun on the planet and to determine the planet's orbit around the sun.
+        self.x_vel=0 # Initial velocity in the x direction
+        self.y_vel=0 # Initial velocity in the y direction
+
+        self.on_land = True # If True will be moving with the planet
+        self.actively_accelerating = False
+        self.actively_decelerating = False
+        self.parent_planet = None
+        
+    def draw(self, win):
+        current_scale = Planet.ZOOM_SCALE if Planet.zoomed else Planet.SCALE
+        x = self.x * current_scale + width / 2 - CAMERA.x
+        y = self.y * current_scale + height / 2 - CAMERA.y
+
+        if len(self.orbit) > 200:
+            self.orbit.pop(0)
+        if len(self.orbit) > 2:
+            update_points = []
+            for point in self.orbit:
+                px, py = point
+                px = px * current_scale + width / 2 - CAMERA.x
+                py = py * current_scale + height / 2 - CAMERA.y
+                update_points.append((px, py))
+            pygame.draw.lines(win, self.color, False, update_points, 2)
+
+        speed = math.sqrt(self.x_vel**2 + self.y_vel**2)
+        if speed > 0:
+            dir_x = self.x_vel / speed
+            dir_y = self.y_vel / speed
+            self.direction = pygame.Vector2(dir_x, dir_y)
+        else:
+            dir_x, dir_y = 0, -1  # Default: point up
+
+        # Perpendicular vector
+        perp_x = -dir_y
+        perp_y = dir_x
+
+        half_w = self.width / 2
+
+        # forward along direction by length
+        tip    = (x + dir_x * self.length,       y + dir_y * self.length)
+        # Rocket corners back along direction, spread by half_w perpendicularly
+        base_l = (x - dir_x * half_w + perp_x * half_w, y - dir_y * half_w + perp_y * half_w)
+        base_r = (x - dir_x * half_w - perp_x * half_w, y - dir_y * half_w - perp_y * half_w)
+
+        points = [tip, base_l, base_r]
+
+        pygame.draw.polygon(win, self.color, points, width=0)
+
+        calm_down = 100
+
+        if self.actively_accelerating:
+            draw_arrow(win, blue, (x,y), (x + self.x_vel / calm_down, y + self.y_vel / calm_down), width=5)
+
+        
+        if self.actively_decelerating:
+            draw_arrow(win, red, (x,y), (x - self.x_vel / calm_down, y - self.y_vel / calm_down), width=5)
+
+        if not self.sun:
+            distance_text = FONT.render(f"{round(self.distance_to_sun/1000,1)}km", 1, white)
+            win.blit(distance_text, (x - distance_text.get_width()/2, y - distance_text.get_height()/2))
+
+    def update_position(self, planets):
+        total_fx = total_fy = 0 # Initialize total force components to zero, which will be used to accumulate the net gravitational force exerted on the planet by all other planets in the simulation.
+        for planet in planets:
+            if self == planet: # Skip calculating attraction to itself
+                continue
+            fx, fy = self.attraction(planet) # Calculate the gravitational force exerted by each planet on the current planet using the attraction method, which returns the x and y components of the force.
+            total_fx += fx  
+            total_fy += fy # Accumulate the total force components by adding the force from each planet to the total_fx and total_fy variables.
+        
+        if self.actively_accelerating:
+            total_fx += self.direction.x * self.thrust 
+            total_fy += self.direction.y * self.thrust 
+
+        if self.actively_decelerating:
+            total_fx -= self.direction.x * self.thrust 
+            total_fy -= self.direction.y * self.thrust 
+
+        self.x_vel += total_fx / self.mass * self.TIMESTEP # v = v + (F/m) * dt: Update the velocity of the planet in the x direction by adding the acceleration (total force divided by mass) multiplied by the time step to the current velocity.
+        self.y_vel += total_fy / self.mass * self.TIMESTEP # v = v + (F/m) * dt: Update the velocity of the planet in the y direction by adding the acceleration (total force divided by mass) multiplied by the time step to the current velocity.
+         
+
+
+        # Set direction alligned to velocity (normalized)
+        #norm = ( self.x_vel ** 2 + self.y_vel ** 2)  
+        #self.direction = pygame.Vector2(self.x / norm,self.y / norm) 
+
+        # First check if we inside a planet, in this case stick it to it, and set
+        
+        self.x += self.x_vel * self.TIMESTEP # x = x + v * dt: Update the position of the planet in the x direction by adding the velocity multiplied by the time
+        self.y += self.y_vel * self.TIMESTEP
+        
+FONT_UI = pygame.font.SysFont("comicsans", 14)
+def draw_ui(win, rocket, cam_mode, planets):
+    panel_x, panel_y = 13, 10
+    line_h = 20
+    labels = [
+        f"CAM: {planets[cam_mode].name} arrows (<- ->) to switch",
+        f"ZOOM:  arrows (up down) scale",
+        "",
+        f"ROCKET",
+        f"  Speed : {round(math.sqrt(rocket.x_vel**2 + rocket.y_vel**2)/1000, 2)} km/s",
+        f"  Thrust: {'ACCEL (A)' if rocket.actively_accelerating else 'DECEL (S)' if rocket.actively_decelerating else 'IDLE'}",
+        "",
+        "Controls: A=accel  S=decel",
+        "M - to change the map"
+    ]
+
+    # Semi-transparent background box
+    box_w, box_h = 260, len(labels) * line_h + 10
+    surf = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+    surf.fill((0, 0, 0, 140))
+    win.blit(surf, (panel_x - 4, panel_y - 4))
+ 
+    for i, label in enumerate(labels):
+        color = white
+        if "ACCEL" in label:
+            color = (255, 100, 100)
+        elif "DECEL" in label:
+            color = (100, 160, 255)
+        txt = FONT_UI.render(label, 1, color)
+        win.blit(txt, (panel_x, panel_y + i * line_h))
+ 
+
+def scenario2():# Create a new scenario with different planets and initial conditions to demonstrate the flexibility of the simulation and to provide users with an alternative view of a planetary system.
+    sun=Planet(0,0,30,yellow,1.98892*10**30,name="Sun") # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    sun.sun=True # Set the sun attribute to True for the sun object, indicating that it
+    
+
+    earth=Planet(-1*Planet.AU,0,16,blue,5.9742*10**24,name="Earth") # Create an earth object at a distance of 1 AU from the sun with a specified radius, color, and mass.
+    earth.y_vel= 29.783 * 1000 # Set the initial velocity of the earth in the y direction to 29.783 km/s (converted to m/s), which is the average orbital speed of the earth around the sun.
+    
+    mars=Planet(-1.524*Planet.AU,0,12,red,6.39*10**23,name="Mars") # Create a mars object at a distance of 1.524 AU from the sun with a specified radius, color, and mass.
+    mars.y_vel= 24.077 * 1000 # Set the initial velocity of the mars in the y direction to 24.077 km/s (converted to m/s), which is the average orbital speed of the mars around the sun.
+
+    mercury=Planet(0.387*Planet.AU,0,8,dark_grey, 3.3*10**23,name="Mercury") # Create a mercury object at a distance of 0.387 AU from the sun with a specified radius, color, and mass.
+    mercury.y_vel = -47.4 *1000
+    
+    venus=Planet(0.723*Planet.AU,0,14,white,4.8685*10**24,name="Venus")
+    venus.y_vel = -35.02 * 1000
+    
+    jupiter=Planet(-5.2*Planet.AU,0,25,pink,1.8986*10**27,name="Jupiter")
+    jupiter.y_vel = 13.06 * 1000
+    
+    nepturn=Planet(-30*Planet.AU,0,22,(0,255,255),1.024*10**26,name="Nepture")
+    nepturn.y_vel = 5.43 * 1000
+
+    #def __init__(self,x, y, color, mass, length, width):
+    rocket=Rocket(0.823*Planet.AU,0,white, 10000,20,10,name="Rocket")
+    rocket.y_vel = -35.02 * 1000
+
+    #Alfa=Planet(1.5*Planet.AU,0,20,blue,1.98892*10**30) # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    #Alfa.sun=True # Set the sun attribute to True for the sun object, indicating that it
+    #Alfa.y_vel = 35.02 * 1000
+
+    planets=[rocket,sun, nepturn, earth,mars,mercury,venus,jupiter] # Create a list to store the planets in the simulation, starting with the sun as the first planet.
+    return planets
+
+def scenario1(): # This function sets up the initial conditions for the first scenario of the planet simulation. It creates several Planet objects representing the sun, earth, mars, mercury, venus, and a rocket, each with specific properties such as position, radius, color, mass, and initial velocity. The planets are then added to a list called "planets", which is returned at the end of the function. This list will be used in the main loop of the simulation to update and draw the planets on the screen.
+    sun=Planet(0,0,30,yellow,1.98892*10**30,name="Sun") # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    sun.sun=True # Set the sun attribute to True for the sun object, indicating that it
+
+
+    earth=Planet(-1*Planet.AU,0,16,blue,5.9742*10**24,name="Earth") # Create an earth object at a distance of 1 AU from the sun with a specified radius, color, and mass.
+    earth.y_vel= 29.783 * 1000 # Set the initial velocity of the earth in the y direction to 29.783 km/s (converted to m/s), which is the average orbital speed of the earth around the sun.
+    
+    mars=Planet(-1.524*Planet.AU,0,12,red,6.39*10**23,name="Mars") # Create a mars object at a distance of 1.524 AU from the sun with a specified radius, color, and mass.
+    mars.y_vel= 24.077 * 1000 # Set the initial velocity of the mars in the y direction to 24.077 km/s (converted to m/s), which is the average orbital speed of the mars around the sun.
+
+    mercury=Planet(0.387*Planet.AU,0,8,dark_grey, 3.3*10**23,name="Mercury") # Create a mercury object at a distance of 0.387 AU from the sun with a specified radius, color, and mass.
+    mercury.y_vel = -47.4 *1000
+    
+    venus=Planet(0.723*Planet.AU,0,14,white,4.8685*10**24,name="Venus")
+    venus.y_vel = -35.02 * 1000
+
+    jupiter=Planet(5.2*Planet.AU,0,25,(255,165,0),1.898*10**27,name="Jupiter")
+    jupiter.y_vel = -13.06 * 1000
+    #def __init__(self,x, y, color, mass, length, width):
+    rocket=Rocket(0.823*Planet.AU,0,white, 10000,20,10,name="Rocket")
+    rocket.y_vel = -35.02 * 1000
+
+    saturn=Planet(9.5*Planet.AU,0,22,(210,180,140),5.683*10**26,name="Saturn")
+    saturn.y_vel = -9.68 * 1000
+
+
+    #Alfa=Planet(25*Planet.AU,0,40,blue,1.98892*10**30) # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    #Alfa.sun=True # Set the sun attribute to True for the sun object, indicating that it
+    #Alfa.y_vel = 35.02 * 100
+    
+
+    #Alfa_small=Planet(26*Planet.AU,0,15,green,1.98892*10**24) # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    #Alfa_small.y_vel = 40.02 * 1000
+
+
+    #Alfa_small2=Planet(27*Planet.AU,0,15,white,1.98892*10**12) # Create a sun object at the center of the simulation with a specified radius, color, and mass.
+    #Alfa_small2.y_vel = 40.02 * 1000
+
+
+    planets=[rocket,saturn, sun,earth,mars,mercury,venus,jupiter] # Create a list to store the planets in the simulation, starting with the sun as the first planet.
+    return planets
+
+MAP = 0
+first_execution = True
+
+def main():
+    run = True
+    clock=pygame.time.Clock()
+ 
+    cam_mode = 0
+    global MAP
+    if MAP == 0:
+        planets = scenario1()
+    else:
+        planets = scenario2()
+ 
+    rocket = planets[0]
+    BREAK_OUTER = False
+    while run:
+        if BREAK_OUTER:
+            break
+        global CAMERA
+            
+        current_scale = Planet.ZOOM_SCALE if Planet.zoomed else Planet.SCALE
+        CAMERA.x = planets[cam_mode].x * current_scale
+        CAMERA.y = planets[cam_mode].y * current_scale
+ 
+        # FIX: always tick and draw the background every frame (removed broken first_execution gate)
+        clock.tick(60)
+        WIN.blit(background, (0, 0))
+ 
+        for event in pygame.event.get():
+            if event.type==pygame.QUIT:
+                run = False
+                BREAK_OUTER = True  # also break outer loop so we reach pygame.quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_z:
+                    Planet.zoomed = not Planet.zoomed
+                
+                if event.key == pygame.K_a:
+                    rocket.actively_accelerating = True
+ 
+                if event.key == pygame.K_s:
+                    rocket.actively_decelerating = True
+                
+                if event.key == pygame.K_m:
+                   MAP = 1 - MAP
+                   BREAK_OUTER = True
+ 
+                if event.key == pygame.K_RIGHT:
+                    cam_mode += 1
+                    if cam_mode == len(planets):
+                        cam_mode = 0
+                elif event.key == pygame.K_LEFT: 
+                    cam_mode -= 1
+                    if cam_mode == -1:
+                        cam_mode = len(planets) - 1
+ 
+                if event.key == pygame.K_UP:
+                    Planet.SCALE *= 5
+                elif event.key == pygame.K_DOWN: 
+                    Planet.SCALE /= 5
+ 
+            elif event.type == pygame.KEYUP:
+                rocket.actively_decelerating = False
+                rocket.actively_accelerating = False
+ 
+        for planet in planets:
+            planet.update_position(planets)
+            planet.draw(WIN)
+        
+        draw_ui(WIN, rocket, cam_mode, planets)
+        
+        pygame.display.update()
+ 
+    # Return True if the user closed the window, False if just switching maps
+    return BREAK_OUTER and not run
+ 
+while True:
+    should_quit = main()
+    if should_quit:
+        pygame.quit()
+        break
